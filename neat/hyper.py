@@ -80,7 +80,7 @@ additional goals
     2.2 the config of the CPPN should be fully configurable (except dimensions)
 3. implement some HyperNEAT extension algorithms:
     3.1 es-hyperneat (automatic hidden node placement)
-    3.2 leo-hyperneat (set bias for nodes by CPPN?)
+    3.2 hyperneat-LEO (disable connections with a CPPN expression value <= 0)
 -----------------
 TODO
 -----------------
@@ -94,6 +94,11 @@ TODO
 4. tests
 5. compatibility with iznn and other neural networks
 6. more/better configuration options
+7. optimize CPPN
+    7.1 make LEO and bias disable-able
+    7.1 reduce number of outputs to the required minimum
+    (if we should not determine the bias, we do not need this output)
+8. enforce number of input and output nodes of the CPPN
 """
 
 
@@ -215,19 +220,19 @@ class HyperGenome(genome.DefaultGenome):
             self._fitness_function(copies, config)
 
         # determine the winner
-        winner = self._cppn_pop.run(_tff, self.config.cppn_config.cppn_generations)
+        winner = self._cppn_pop.run(_tff, self.config.genome_config.cppn_generations)
         # we set this genomes cppn to the winner
         self.cppn = winner
         self._did_evolve_cppn = True
 
     def querry_cppn(self, p1, p2):
-        """returns the (weight, bias) for the connection or gene"""
+        """returns the (weight, expression, bias) for the connection or gene"""
         # convention: when querrying for bias, p2 is always (0, 0, ...)
         # TODO: check if it makes sense to supply the layer index to the CPPN
         net = neat.nn.FeedForwardNetwork.create(self.cppn, self._cppn_config)
         inp = list(p1) + list(p2)
-        weight, bias = net.activate(inp)
-        return weight, bias
+        weight, expression, bias = net.activate(inp)
+        return weight, expression, bias
 
     def weight_for_connection(self, conn):
         """returns the weight for the specified connection"""
@@ -235,11 +240,18 @@ class HyperGenome(genome.DefaultGenome):
         p1 = i.position
         p2 = o.position
         return self.querry_cppn(self, p1, p2)[0]
+    
+    def expression_value_for_connection(self, conn):
+        """returns the expression value for the specified connection"""
+        i, o = conn._get_nodes()
+        p1 = i.position
+        p2 = o.position
+        return self.querry_cppn(self, p1, p2)[1]
 
     def bias_for_node(self, p):
         """returns the bias for the node at p"""
         p2 = Coordinate([0] * p.n)
-        return self.querry_cppn(self, p, p2)[1]
+        return self.querry_cppn(self, p, p2)[2]
 
     def configure_new(self, config):
         """configures a new HyperGenome from scratch."""
@@ -263,7 +275,7 @@ class HyperGenome(genome.DefaultGenome):
         """adds a new connection"""
         sn = self.nodes[input_key]
         en = self.nodes[output_key]
-        if not config.allow_connections_to_lower_layers:
+        if not config.genome_config.allow_connections_to_lower_layers:
             assert (en.layer >= sn.layer) or (en.layer == OUTPUT_LAYER)
         connection = genome.DefaultGenome.add_connection(
             self,
@@ -279,7 +291,7 @@ class HyperGenome(genome.DefaultGenome):
         """creates a new connection"""
         sn = self.nodes[input_id]
         en = self.nodes[output_id]
-        if not config.allow_connections_to_lower_layers:
+        if not config.genome_config.allow_connections_to_lower_layers:
             assert (en.layer >= sn.layer) or (en.layer == OUTPUT_LAYER)
         connection = genome.DefaultGenome.create_connection(
             config,
@@ -306,7 +318,7 @@ class HyperGenome(genome.DefaultGenome):
             input_id, output_id = cg.key
             sn = self.nodes[input_id]
             en = self.nodes[output_id]
-            if not config.allow_connections_to_lower_layers:
+            if not config.genome_config.allow_connections_to_lower_layers:
                 if (en.layer < sn.layer) and not (en.layer == OUTPUT_LAYER):
                     continue
             return cg
@@ -352,6 +364,7 @@ class HyperNodeGene(genes.DefaultNodeGene):
         if self.key in self.genome.config.genome_config.output_keys:
             # node is output node
             return OUTPUT_LAYER
+        # node is a hidden node
         return self._layer
 
     @layer.setter
@@ -403,7 +416,7 @@ class HyperConnectionGene(genes.DefaultConnectionGene):
             raise RuntimeError("weight querried but genome not set!")
         ing, ong = self._get_nodes()
         if ing.layer != ong.layer:
-            return self.genome.weight_for_connection(self.key)
+            return self.genome.weight_for_connection(self)
         else:
             return self._weight
 
@@ -418,7 +431,8 @@ class HyperConnectionGene(genes.DefaultConnectionGene):
         # TODO: check if it would be useful to set a min value in the config
         ing, outg = self._get_nodes()
         if ing.layer != outg.layer:
-            return (self.weight > 0.0)
+            e = self.genome.expression_value_for_connection(self)
+            return (e > 0.0)
         else:
             return self._enabled
 
