@@ -97,11 +97,11 @@ class IntAttribute(FloatAttribute):
     def init_value(self, config):
         v = FloatAttribute.init_value(self, config)
         return self._as_int(v)
-    
+
     def mutate_value(self, value, config):
         v = FloatAttribute.mutate_value(self, value, config)
         return self._as_int(v)
-    
+
 
 
 class BoolAttribute(BaseAttribute):
