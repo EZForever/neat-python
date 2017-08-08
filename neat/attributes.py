@@ -83,6 +83,27 @@ class FloatAttribute(BaseAttribute):
         pass
 
 
+class IntAttribute(FloatAttribute):
+    """
+    Class for numeric non-float attributes, such as the layer of a node.
+    This is a subclass of FloatAttribute, which round()s the floats returned by
+    the FloatAttribute. This means that you can still use float init_mean and
+    float init_stdev for better variaton control.
+    """
+    def _as_int(self, v):
+        """transforms the float v into an integer"""
+        return int(round(v, 0))
+
+    def init_value(self, config):
+        v = FloatAttribute.init_value(self, config)
+        return self._as_int(v)
+    
+    def mutate_value(self, value, config):
+        v = FloatAttribute.mutate_value(self, value, config)
+        return self._as_int(v)
+    
+
+
 class BoolAttribute(BaseAttribute):
     """Class for boolean attributes such as whether a connection is enabled or not."""
     _config_items = {"default": [str, None],

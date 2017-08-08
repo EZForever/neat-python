@@ -5,7 +5,7 @@ import copy
 import random
 
 import neat
-from neat import genome, config, population, genes
+from neat import genome, config, population, genes, attributes
 
 
 """
@@ -149,6 +149,7 @@ class HyperGenomeConfig(genome.DefaultGenomeConfig):
         config.ConfigParameter("cppn_generations", int, 30),
         # TODO: find a better name for the following ConfigParameter
         config.ConfigParameter('allow_connections_to_lower_layers', bool, False),
+        config.ConfigParameter("substrate_dimensions", int, 2),
         ]
 
 
@@ -172,6 +173,9 @@ class HyperGenome(genome.DefaultGenome):
     def parse_config(cls, param_dict):
         param_dict['node_gene_type'] = HyperNodeGene
         param_dict['connection_gene_type'] = HyperConnectionGene
+        dimensions = int(param_dict.get("substrate_dimensions", 2))
+        param_dict["num_inputs"] = (dimensions * 2)
+        param_dict["num_outputs"] = 3
         hgc = HyperGenomeConfig(param_dict)
         if hgc.cppn_config is None:
             raise RuntimeError("No CPPN config specified!")
@@ -326,11 +330,16 @@ class HyperGenome(genome.DefaultGenome):
     def get_nodes_on_layer(self, layer):
         """returns a list of nodes on the specified layer"""
         # TODO: there was some way to do the same while avoiding filter()
-        return filter(None, [node if node.layer == layer else None for node in self.nodes])
+        # return filter(None, [node if node.layer == layer else None for node in self.nodes])
+        return [node for node in self.nodes if node.layer == layer]
 
 
 class HyperNodeGene(genes.DefaultNodeGene):
     """A subclass of genes.DefaultNodeGene for HyperNEAT"""
+    _gene_attributes = genes.DefaultNodeGene._gene_attributes + [
+        attributes.IntAttribute("layer"),
+    ]
+
     def __init__(self, *args, **kwargs):
         genes.DefaultNodeGene.__init__(self, *args, **kwargs)
         self.genome = None
