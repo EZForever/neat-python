@@ -3,6 +3,9 @@ hyperneat implementation for neat-python.
 """
 import copy
 import random
+import collections
+import itertools
+import math
 
 import neat
 from neat import genome, config, population, genes, attributes
@@ -30,7 +33,8 @@ How a HyperNEAT works:
     bias of a node. However, as the CPPN has 2*n inputs and only n inputs are
     required to describe the location of a node, a convention is needed to
     determine the input representation of a node. A suggestion is setting the
-    inputs for the end node to 0.
+    inputs for the end node to 0. @drallensmith suggested setting both positions
+    to the position of the node.
 6. when evaluating the substrate, start a neat evolution of the CPPN with
     the substrate. The fitness of the substrate becomes the fitness of the CPPN.
     The champion CPPN is then used to evaluate the fitness of the substrate and
@@ -98,14 +102,13 @@ TODO
     7.1 make LEO and bias disable-able
     7.1 reduce number of outputs to the required minimum
     (if we should not determine the bias, we do not need this output)
-8. enforce number of input and output nodes of the CPPN
+8. check names for config options and other names
 """
 
 
 # constants for easier access to the input and output layers
 INPUT_LAYER = 0  # 0 because the index 0 points to the first element
 OUTPUT_LAYER = -1  # -1 because the index -1 points to the last element
-
 
 class DimensionError(ValueError):
     """
@@ -126,6 +129,10 @@ class Coordinate(object):
         """expands the dimensionality of the coordinate"""
         self.values.insert(index, value)
         self.n += 1
+    
+    def zero_copy(self):
+        """returns a copy of this coordinate at (0, 0, ...)"""
+        return self.__class__([0] * self.n)
 
     def __len__(self):
         """returns the number of dimensions this coordinate has"""
@@ -141,15 +148,60 @@ class Coordinate(object):
         for v in self.values:
             yield v
 
+    def distance_to(self, other):
+        """
+        returns the distance between this coordinate and the other coordinate
+        """
+        if self.n != other.n:
+            raise DimensionError(
+                "can not calculate distance between points of different \
+                dimensionality!"
+            )
+        deltas = [sv - ov for sv, ov in zip(self.values, other.values)]
+        qs = sum([d ** 2 for d in deltas])
+        return math.sqrt(qs)
+
+
+
+
+class _QuadPoint(object):
+    """
+    A node in the quadtree.
+    TODO: rename this. i am not sure if the modified algorithm is still a
+    quadtree. IIRC the algorithm and points are only called a quadthree when
+    they are two-dimensional.
+    """
+    __slots__ = ["position", "width", "level", "cs"]
+    def __init__(self, position, width, level):
+        assert isinstance(position, Coordinate)
+        self.position = position
+        self.width = width
+        self.level = level
+        self.cs = [None] * (2 ** position.n)
+
+class CPPNGenome(genome.DefaultGenome):
+    """
+    A neat.genome.DefaultGenome subclass for the CPPN.
+    We need this class for LEO seeding.
+
+    LEO CPPN network:
+    - each coordinate input nodes (x1 and x2, y1 and y2 ...) are each connected
+    to a hidden node with a gaussian activation function. The weight of
+    (x1, y1...) is positive, while the weight of (x2, y2 ...) is negative.
+    These hidden nodes are connected to the LEO which has a bias of -3.
+    """
+    pass
+
 
 class HyperGenomeConfig(genome.DefaultGenomeConfig):
     """A neat.genome.DefaultGenome subclass for HyperNEAT"""
     _params_sig = genome.DefaultGenomeConfig._params_sig + [
         config.ConfigParameter("cppn_config", str, None),
         config.ConfigParameter("cppn_generations", int, 30),
-        # TODO: find a better name for the following ConfigParameter
+        # TODO: find a better name for the following ConfigParameters
         config.ConfigParameter('allow_connections_to_lower_layers', bool, False),
         config.ConfigParameter("substrate_dimensions", int, 2),
+        config.ConfigParameter("leo_threshold", float, 0.45),
         ]
 
 
@@ -157,7 +209,7 @@ class HyperGenome(genome.DefaultGenome):
     """A neat.genome.DefaultGenome subclass for HyperNEAT"""
 
     # arguments passed to the cppn config.Config()
-    cppn_genome = neat.DefaultGenome
+    cppn_genome = CPPNGenome  # neat.DefaultGenome
     cppn_reproduction = neat.DefaultReproduction
     cppn_species_set = neat.DefaultSpeciesSet
     cppn_stagnation = neat.DefaultGenome
@@ -174,7 +226,7 @@ class HyperGenome(genome.DefaultGenome):
         param_dict['node_gene_type'] = HyperNodeGene
         param_dict['connection_gene_type'] = HyperConnectionGene
         dimensions = int(param_dict.get("substrate_dimensions", 2))
-        param_dict["num_inputs"] = (dimensions * 2)
+        param_dict["num_inputs"] = (dimensions * 2) + 1
         param_dict["num_outputs"] = 3
         hgc = HyperGenomeConfig(param_dict)
         if hgc.cppn_config is None:
@@ -231,31 +283,54 @@ class HyperGenome(genome.DefaultGenome):
 
     def querry_cppn(self, p1, p2):
         """returns the (weight, expression, bias) for the connection or gene"""
-        # convention: when querrying for bias, p2 is always (0, 0, ...)
+        # convention: when querrying for bias, p2 == p1
         # TODO: check if it makes sense to supply the layer index to the CPPN
+        l = p1.distance_to(p2)
+        # create a CPPN network
+        # TODO: make network type configurable
         net = neat.nn.FeedForwardNetwork.create(self.cppn, self._cppn_config)
-        inp = list(p1) + list(p2)
+        # set inputs
+        # we supply the following inputs:
+        # - positions of both nodes
+        # - distance between them
+        # TODO: some papers seem to use a 'bias' value. Which bias is meant?
+        inp = list(p1) + list(p2) + [l]
         weight, expression, bias = net.activate(inp)
         return weight, expression, bias
+
+    def weight_between_points(self, p1, p2):
+        """returns the weight for the connection between the specified points"""
+        return self.querry_cppn(p1, p2)[0]
 
     def weight_for_connection(self, conn):
         """returns the weight for the specified connection"""
         i, o = conn._get_nodes()
         p1 = i.position
         p2 = o.position
-        return self.querry_cppn(self, p1, p2)[0]
+        return self.weight_between_points(p1, p2)
     
     def expression_value_for_connection(self, conn):
         """returns the expression value for the specified connection"""
+        # TODO: use value from CPPN
+        # it appears that leo requires an premodified CPPN.
+        #
+        # we use the formula from
+        # http://eplex.cs.ucf.edu/papers/verbancsics_gecco11.pdf
+        # t = c + c * |ni -nj|
+        # where t = the local threshold
+        # and c = a global defined value (defined in the config)
+        # and |ni - nj| the distance between the nodes
         i, o = conn._get_nodes()
         p1 = i.position
         p2 = o.position
-        return self.querry_cppn(self, p1, p2)[1]
+        d = p1.get_distance_to(p2)
+        c = self.config.genome_config.leo_threshold
+        t = c + c * d
+        return t
 
     def bias_for_node(self, p):
         """returns the bias for the node at p"""
-        p2 = Coordinate([0] * p.n)
-        return self.querry_cppn(self, p, p2)[2]
+        return self.querry_cppn(p, p)[2]
 
     def configure_new(self, config):
         """configures a new HyperGenome from scratch."""
@@ -329,9 +404,49 @@ class HyperGenome(genome.DefaultGenome):
 
     def get_nodes_on_layer(self, layer):
         """returns a list of nodes on the specified layer"""
-        # TODO: there was some way to do the same while avoiding filter()
-        # return filter(None, [node if node.layer == layer else None for node in self.nodes])
         return [node for node in self.nodes if node.layer == layer]
+
+    def _division_and_initialization(self, position, outgoing):
+        """
+        Returns a Quadtree, in which each quadnode at a position stores CPPN
+        activation level for its position.
+        Arguments:
+            position: coordinates of source or target.
+            outgoing: wether position points to source (True) or target (False).
+        """
+        root = _QuadPoint(position.zero_copy(), 1, 1)
+        q = collections.deque()
+        q.append(root)
+        while len(q) > 0:
+            p = q.popleft()  # TODO: check if q access should be FIFO or LIFO
+            # Divide into sub-regions and assign children to parent
+            hw = p.width / 2.0
+            ops = list(itertools.permutations(["+", "-"]))
+            ops += ["-"] * p.position.n + ["+"] * p.position.n
+            for i in range(2 ** p.position.n):
+                nv = [None] * p.position.n
+                for vi, op in enumerate(ops):
+                    tnv = p.position.values[vi]
+                    if op == "+":
+                        tnv += hw
+                    else:
+                        tnv -= hw
+                    nv[vi] = tnv
+                np = Coordinate(nv)
+                p.cs[i] = _QuadPoint(np, hw, p.level + 1)
+            for c in p.cs:
+                if outgoing:
+                    c.weight = self.weight_between_points(position, c.position)
+                else:
+                    c.weight = self.weight_between_points(c.position, position)
+            # Divide until initial resolution or if variance is still high
+            # TODO: write variance(p) and define max_depth, division_threshold,
+            # initial_depth
+            tr = (p.level < max_depth and variance(p) > division_threshold)
+            if (p.level < initial_depth) or tr:
+                for child in p.cs:
+                    q.append(child)
+        return root
 
 
 class HyperNodeGene(genes.DefaultNodeGene):
@@ -374,7 +489,7 @@ class HyperNodeGene(genes.DefaultNodeGene):
             # node is output node
             return OUTPUT_LAYER
         # node is a hidden node
-        return self._layer
+        return min(1, self._layer)
 
     @layer.setter
     def layer(self, value):
