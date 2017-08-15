@@ -281,7 +281,7 @@ class HyperGenome(genome.DefaultGenome):
         self.cppn = winner
         self._did_evolve_cppn = True
 
-    def querry_cppn(self, p1, p2):
+    def activate_cppn(self, p1, p2):
         """returns the (weight, expression, bias) for the connection or gene"""
         # convention: when querrying for bias, p2 == p1
         # TODO: check if it makes sense to supply the layer index to the CPPN
@@ -294,13 +294,15 @@ class HyperGenome(genome.DefaultGenome):
         # - positions of both nodes
         # - distance between them
         # TODO: some papers seem to use a 'bias' value. Which bias is meant?
+        # EDIT: seems like this bias is an alternative to the internal bias used
+        # by neat-python nodes
         inp = list(p1) + list(p2) + [l]
         weight, expression, bias = net.activate(inp)
         return weight, expression, bias
 
     def weight_between_points(self, p1, p2):
         """returns the weight for the connection between the specified points"""
-        return self.querry_cppn(p1, p2)[0]
+        return self.activate_cppn(p1, p2)[0]
 
     def weight_for_connection(self, conn):
         """returns the weight for the specified connection"""
@@ -330,7 +332,7 @@ class HyperGenome(genome.DefaultGenome):
 
     def bias_for_node(self, p):
         """returns the bias for the node at p"""
-        return self.querry_cppn(p, p)[2]
+        return self.activate_cppn(p, p)[2]
 
     def configure_new(self, config):
         """configures a new HyperGenome from scratch."""
@@ -402,17 +404,25 @@ class HyperGenome(genome.DefaultGenome):
                     continue
             return cg
 
-    def get_nodes_on_layer(self, layer):
-        """returns a list of nodes on the specified layer"""
+    def get_nodes_in_layer(self, layer):
+        """returns a list of nodes in the specified layer"""
         return [node for node in self.nodes if node.layer == layer]
 
-    def _division_and_initialization(self, position, outgoing):
+    def _division_and_initialization(
+        self,
+        position,
+        outgoing,
+        max_depth,
+        division_threshold,
+        initial_depth,
+        ):
         """
         Returns a Quadtree, in which each quadnode at a position stores CPPN
         activation level for its position.
         Arguments:
             position: coordinates of source or target.
             outgoing: wether position points to source (True) or target (False).
+            max_depth, division_threshold, initial_depth: ?
         """
         root = _QuadPoint(position.zero_copy(), 1, 1)
         q = collections.deque()
@@ -440,13 +450,37 @@ class HyperGenome(genome.DefaultGenome):
                 else:
                     c.weight = self.weight_between_points(c.position, position)
             # Divide until initial resolution or if variance is still high
-            # TODO: write variance(p) and define max_depth, division_threshold,
-            # initial_depth
+            # TODO: write variance(p)
             tr = (p.level < max_depth and variance(p) > division_threshold)
             if (p.level < initial_depth) or tr:
                 for child in p.cs:
                     q.append(child)
         return root
+    
+    def pruning_and_extraction(self, position, connections, p, outgoing):
+        """
+        Adds the connections that are in bands of the two-dimensional
+        cross-section of the hypercube containing the source or target node to
+        the connections list.
+        Arguments:
+            position: coordinates of source or target
+            connections: list of connections (?)
+            outgoing: wether position points to source (True) or target (False).
+            p: initialized quadtree 
+        TODO: check docstring. This docstring is from some pseudo code from a
+        paper by Sebastion Risi and Kenneth O. Stanley. Since this code is
+        modified to work with any number of dimensions, this docstring may be
+        wrong.
+        """
+        # traverse quadtree depth-first
+        for c in p.cs:
+            if variance(c) >= variance_threshold:
+                self.pruning_and_extraction(position, connections, c, outgoing)
+            else:
+                # Determine if point is in a band by checking neighbor CPPN values
+                d = {}
+                if outgoing:
+                    pass
 
 
 class HyperNodeGene(genes.DefaultNodeGene):
