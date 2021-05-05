@@ -420,14 +420,15 @@ class DistributedEvaluator(object):
         else:
             self._state = _STATE_SHUTDOWN
         time.sleep(wait)  # wait is now mostly for backwards compability
+        self.started = False
+        self._stopwaitevent.wait()
+        # MOD: Close socket after thread ends to avoid socket sync issues
         if shutdown:
             try:
                 self._listen_s.close()
             except:
                 pass
             self._listen_s = None
-        self.started = False
-        self._stopwaitevent.wait()
 
     def _start_primary(self):
         """Start as the primary node."""
