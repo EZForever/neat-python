@@ -472,7 +472,7 @@ class DistributedEvaluator(object):
                     try:
                         c, addr = s.accept()
                     except Exception:
-                        if not self._started:
+                        if not self.started:
                             break
                         raise
                     mh = _MessageHandler(c)
